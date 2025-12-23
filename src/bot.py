@@ -41,23 +41,28 @@ def glitchtip_webhook():
     logging.debug("Received POST request at root '/'")
     payload = request.json
 
+    logging.debug(f"Full payload received: {payload}")
+
     if payload and payload.get("alias") == "GlitchTip":
         try:
             attachments = payload.get("attachments", [])
             messages = []
 
-            # Iterate through all attachments and build a list of formatted messages
             for att in attachments:
                 title = att.get("title", "No title")
                 link = att.get("title_link", "")
+                text = att.get("text", "")
+                color = att.get("color", "")
                 fields = att.get("fields", [])
 
                 project = ""
                 environment = ""
                 release = ""
                 server_name = ""
+                url = ""
+                expected_status = ""
+                timeout = ""
 
-                # Handle case where fields might be None
                 if fields:
                     for field in fields:
                         field_title = field.get("title")
@@ -71,22 +76,73 @@ def glitchtip_webhook():
                             release = field_value
                         elif field_title == "Server Name":
                             server_name = field_value
+                        elif field_title == "URL":
+                            url = field_value
+                        elif field_title == "Expected status":
+                            expected_status = field_value
+                        elif field_title == "Timeout":
+                            timeout = field_value
 
-                # Escape values for MarkdownV2
+                status_emoji = ""
+                status_text = ""
+                if color:
+                    if color.lower() in ["#ff0000", "red", "danger"]:
+                        status_emoji = "🔴"
+                        status_text = "DOWN"
+                    elif color.lower() in ["#00ff00", "green", "good"]:
+                        status_emoji = "🟢"
+                        status_text = "UP"
+                    elif color.lower() in ["#ffff00", "yellow", "warning"]:
+                        status_emoji = "🟡"
+                        status_text = "WARNING"
+                    else:
+                        status_emoji = "⚪"
+                        status_text = "UNKNOWN"
+                else:
+                    text_lower = text.lower() if text else ""
+                    if any(keyword in text_lower for keyword in ["back up", "is up", "recovered", "resolved"]):
+                        status_emoji = "🟢"
+                        status_text = "UP"
+                    elif any(keyword in text_lower for keyword in ["down", "failed", "error", "unavailable"]):
+                        status_emoji = "🔴"
+                        status_text = "DOWN"
+
                 title = escape_markdown_v2(title)
+                text = escape_markdown_v2(text)
                 project = escape_markdown_v2(project)
                 environment = escape_markdown_v2(environment)
                 release = escape_markdown_v2(release)
                 server_name = escape_markdown_v2(server_name)
+                url = escape_markdown_v2(url)
+                expected_status = escape_markdown_v2(expected_status)
+                timeout = escape_markdown_v2(timeout)
                 link = escape_markdown_v2(link)
 
-                # Format the message for a single issue using MarkdownV2
-                issue_message = f"*Title*: {title}\n*Project*: {project}\n*Environment*: {environment}\n"
+                issue_message = ""
 
+                if status_text:
+                    issue_message += f"{status_emoji} *Status*: {escape_markdown_v2(status_text)}\n\n"
+
+                issue_message += f"*Title*: {title}\n"
+
+                if text:
+                    issue_message += f"*Description*: {text}\n"
+
+                if url:
+                    issue_message += f"*Monitored URL*: {url}\n"
+
+                if project:
+                    issue_message += f"*Project*: {project}\n"
+                if environment:
+                    issue_message += f"*Environment*: {environment}\n"
                 if release:
                     issue_message += f"*Release*: {release}\n"
                 if server_name:
                     issue_message += f"*Server Name*: {server_name}\n"
+                if expected_status:
+                    issue_message += f"*Expected Status*: {expected_status}\n"
+                if timeout:
+                    issue_message += f"*Timeout*: {timeout}\n"
 
                 issue_message += f"*Link*: {link}"
 
