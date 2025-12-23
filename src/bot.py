@@ -55,33 +55,41 @@ def glitchtip_webhook():
                 project = ""
                 environment = ""
                 release = ""
+                server_name = ""
 
-                for field in fields:
-                    field_title = field.get("title")
-                    field_value = field.get("value")
+                # Handle case where fields might be None
+                if fields:
+                    for field in fields:
+                        field_title = field.get("title")
+                        field_value = field.get("value")
 
-                    if field_title == "Project":
-                        project = field_value
-                    elif field_title == "Environment":
-                        environment = field_value
-                    elif field_title == "Release":
-                        release = field_value
+                        if field_title == "Project":
+                            project = field_value
+                        elif field_title == "Environment":
+                            environment = field_value
+                        elif field_title == "Release":
+                            release = field_value
+                        elif field_title == "Server Name":
+                            server_name = field_value
 
                 # Escape values for MarkdownV2
                 title = escape_markdown_v2(title)
                 project = escape_markdown_v2(project)
                 environment = escape_markdown_v2(environment)
                 release = escape_markdown_v2(release)
+                server_name = escape_markdown_v2(server_name)
                 link = escape_markdown_v2(link)
 
                 # Format the message for a single issue using MarkdownV2
-                issue_message = (
-                    f"*Title*: {title}\n"
-                    f"*Project*: {project}\n"
-                    f"*Environment*: {environment}\n"
-                    f"*Release*: {release}\n"
-                    f"*Link*: {link}"
-                )
+                issue_message = f"*Title*: {title}\n*Project*: {project}\n*Environment*: {environment}\n"
+
+                if release:
+                    issue_message += f"*Release*: {release}\n"
+                if server_name:
+                    issue_message += f"*Server Name*: {server_name}\n"
+
+                issue_message += f"*Link*: {link}"
+
                 messages.append(issue_message)
 
             if messages:
