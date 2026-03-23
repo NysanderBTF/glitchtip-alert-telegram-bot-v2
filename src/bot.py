@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+from difflib import SequenceMatcher
 
 import requests
 from dotenv import load_dotenv
@@ -11,6 +13,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALERT_CHAT_ID = os.getenv("ALERT_CHAT_ID")
 DEBUG_MODE = int(os.getenv("DEBUG_MODE", "0"))
+PROJECT_TELEGRAM_MENTIONS = os.getenv("PROJECT_TELEGRAM_MENTIONS", "")
 
 # Configure logging
 if DEBUG_MODE:
@@ -30,6 +33,158 @@ def escape_markdown_v2(text):
     """Escapes characters for Telegram MarkdownV2."""
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{char}" if char in escape_chars else char for char in str(text))
+
+
+def normalize_project_key(value):
+    # Normalize separators so `my-project`, `my_project`, and `my project` map alike.
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value).strip().lower())
+    return " ".join(normalized.split())
+
+
+def parse_project_telegram_mentions(raw_value):
+    """Parses `project:user1,user2;project2:user3` into a normalized mapping."""
+    mapping = {}
+    if not raw_value:
+        return mapping
+
+    for chunk in raw_value.split(";"):
+        entry = chunk.strip()
+        if not entry:
+            continue
+
+        if ":" not in entry:
+            logging.warning(
+                "Skipping malformed PROJECT_TELEGRAM_MENTIONS entry (missing ':'): %s",
+                entry,
+            )
+            continue
+
+        project_name, mentions_raw = entry.split(":", 1)
+        project_key = normalize_project_key(project_name)
+        if not project_key:
+            continue
+
+        mentions = [item.strip() for item in mentions_raw.split(",") if item.strip()]
+        if not mentions:
+            continue
+
+        project_targets = mapping.setdefault(project_key, [])
+        for mention in mentions:
+            if mention not in project_targets:
+                project_targets.append(mention)
+
+    return mapping
+
+
+def format_telegram_mention(target):
+    target = str(target).strip()
+    if not target:
+        return ""
+
+    if target.startswith("@"):
+        return escape_markdown_v2(target)
+
+    numeric_id = ""
+    if target.lower().startswith("id:"):
+        numeric_id = target.split(":", 1)[1].strip()
+    elif target.isdigit():
+        numeric_id = target
+
+    if numeric_id and numeric_id.isdigit():
+        label = escape_markdown_v2(f"user_{numeric_id}")
+        return f"[{label}](tg://user?id={numeric_id})"
+
+    return escape_markdown_v2(target)
+
+
+def _best_title_project_key(title):
+    normalized_title = normalize_project_key(title)
+    if not normalized_title:
+        return ""
+
+    padded_title = f" {normalized_title} "
+    phrase_matches = [
+        key for key in PROJECT_MENTION_MAP if key and f" {key} " in padded_title
+    ]
+
+    if len(phrase_matches) == 1:
+        return phrase_matches[0]
+    if len(phrase_matches) > 1:
+        longest = max(len(key) for key in phrase_matches)
+        winners = [key for key in phrase_matches if len(key) == longest]
+        if len(winners) == 1:
+            return winners[0]
+        return ""
+
+    title_tokens = normalized_title.split()
+    if not title_tokens:
+        return ""
+
+    best_key = ""
+    best_score = 0.0
+    tied = False
+
+    for key in PROJECT_MENTION_MAP:
+        key_tokens = key.split()
+        if not key_tokens:
+            continue
+
+        fuzzy_hits = 0
+        for key_token in key_tokens:
+            token_score = max(
+                (SequenceMatcher(None, key_token, title_token).ratio() for title_token in title_tokens),
+                default=0,
+            )
+            if token_score >= 0.86:
+                fuzzy_hits += 1
+
+        score = fuzzy_hits / len(key_tokens)
+        if score > best_score:
+            best_key = key
+            best_score = score
+            tied = False
+        elif score == best_score and score > 0:
+            tied = True
+
+    if tied or best_score < 0.8:
+        return ""
+
+    return best_key
+
+
+def resolve_mentions_for_alert(project_name, title, status_text):
+    # Keep mention noise low: only ping assignees on service state changes.
+    if status_text not in {"UP", "DOWN"}:
+        return ""
+
+    project_key = normalize_project_key(project_name)
+    target_key = ""
+
+    if project_key and project_key in PROJECT_MENTION_MAP:
+        target_key = project_key
+    else:
+        target_key = _best_title_project_key(title)
+
+    targets = PROJECT_MENTION_MAP.get(target_key, [])
+    formatted_mentions = [format_telegram_mention(target) for target in targets]
+    formatted_mentions = [item for item in formatted_mentions if item]
+
+    if formatted_mentions:
+        logging.debug(
+            "Resolved mentions for alert using key '%s' (project='%s', title='%s')",
+            target_key,
+            project_name,
+            title,
+        )
+
+    return " ".join(formatted_mentions)
+
+
+PROJECT_MENTION_MAP = parse_project_telegram_mentions(PROJECT_TELEGRAM_MENTIONS)
+if PROJECT_MENTION_MAP:
+    logging.info(
+        "Loaded project mention mapping for %d project(s)", len(PROJECT_MENTION_MAP)
+    )
 
 
 @app.route("/", methods=["POST", "GET"])
@@ -107,6 +262,8 @@ def glitchtip_webhook():
                         status_emoji = "🔴"
                         status_text = "DOWN"
 
+                mentions = resolve_mentions_for_alert(project, title, status_text)
+
                 title = escape_markdown_v2(title)
                 text = escape_markdown_v2(text)
                 project = escape_markdown_v2(project)
@@ -122,6 +279,9 @@ def glitchtip_webhook():
 
                 if status_text:
                     issue_message += f"{status_emoji} *Status*: {escape_markdown_v2(status_text)}\n\n"
+
+                if mentions:
+                    issue_message += f"*Ping*: {mentions}\n"
 
                 issue_message += f"*Title*: {title}\n"
 
